@@ -1,0 +1,326 @@
+from collections import namedtuple
+from torchvision.datasets import EMNIST, MNIST
+import numpy as np
+import torch
+import torchvision
+import matplotlib.pyplot as plt
+from time import time
+from torchvision import datasets, transforms
+from torch import nn, optim
+import torch.nn.functional as F
+
+
+
+hyperparams = namedtuple('hyperparams', 'batch_size,epochs,learning_rate,n_data')
+
+# Target model hyperparameters
+target_hyperparams = hyperparams(
+    batch_size=256,
+    epochs=10,
+    learning_rate=1e-4,
+    n_data=20_000,
+    )
+
+
+
+
+mnist_transform = transforms.Compose(
+    [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)),]
+)
+
+# Target model training data
+train_data = MNIST("mnist", train=True, download=True, transform=mnist_transform)
+
+# We don't need to use all the training data for MNIST as it's a simple dataset
+train_data.data = train_data.data[:target_hyperparams.n_data]
+train_data.targets = train_data.targets[:target_hyperparams.n_data]
+
+# Target model test data
+test_data = MNIST("mnist", train=False, download=True, transform=mnist_transform)
+
+# Create data loaders
+train_loader = torch.utils.data.DataLoader(train_data, batch_size=target_hyperparams.batch_size)
+test_loader = torch.utils.data.DataLoader(test_data, batch_size=1_000)
+
+
+
+# defining the model architecture
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
+        self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
+        self.conv2_drop = nn.Dropout2d()
+        self.fc1 = nn.Linear(320, 50)
+        self.fc2 = nn.Linear(50, 10)
+
+    def forward(self, x):
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
+        x = x.view(-1, 320)
+        x = F.relu(self.fc1(x))
+        x = F.dropout(x, training=self.training)
+        x = self.fc2(x)
+        return F.log_softmax(x)
+
+"""
+Training the Target MOdel
+"""
+target_model = Net()
+#target_model
+optim = torch.optim.Adam(target_model.parameters(), lr=target_hyperparams.learning_rate)
+loss_criterion = torch.nn.CrossEntropyLoss()
+for epoch in range(target_hyperparams.epochs):
+    train_correct = 0
+    train_loss = 0.
+
+    # Training loop
+    for data, targets in train_loader:
+        #print(targets)
+        optim.zero_grad()
+        #print(targets.size())
+
+        output = target_model(data)
+
+        # Update network
+        loss = loss_criterion(output, targets)
+        loss.backward()
+        optim.step()
+
+        # Track training statistics
+        _, predicted = output.max(1)
+        train_correct += predicted.eq(targets).sum().item()
+        train_loss += loss.item()
+
+
+
+
+"""
+Training data for Shadow model
+
+"""
+
+# shadow model hyperparameters
+shadow_hyperparams = hyperparams(
+    batch_size=32,
+    epochs=10,
+    learning_rate=1e-4,
+    n_data=1_000,
+)
+
+emnist_transform = transforms.Compose(
+    [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,)),]
+)
+shadow_train = EMNIST("emnist", "digits", download=True, train=True, transform=emnist_transform)
+
+# Use the last n_data images in the test set to train the attacker
+shadow_train.data = shadow_train.data[:shadow_hyperparams.n_data]
+shadow_train.targets = shadow_train.targets[:shadow_hyperparams.n_data]
+
+shadow_train_loader = torch.utils.data.DataLoader(shadow_train, batch_size=shadow_hyperparams.batch_size)
+
+#for test data
+
+shadow_test = EMNIST("emnist", "letters", download=True, train=False, transform=emnist_transform)
+
+shadow_test.data = shadow_test.data[:shadow_hyperparams.n_data]
+shadow_test.targets = shadow_test.targets[:shadow_hyperparams.n_data]
+
+shadow_test_loader = torch.utils.data.DataLoader(shadow_test, batch_size=1_000)
+
+
+"""
+Model for Shadow Models
+
+"""
+
+shadow_model = Net()
+
+
+
+shadow_optim = torch.optim.Adam(shadow_model.parameters(), lr=shadow_hyperparams.learning_rate)
+loss_criterion = torch.nn.CrossEntropyLoss()
+
+for epoch in range(shadow_hyperparams.epochs):
+    train_correct = 0
+    train_loss = 0.
+
+    # Training loop
+    for data, targets in shadow_train_loader:
+        shadow_optim.zero_grad()
+        output = shadow_model(data)
+
+    # Update network
+        loss = loss_criterion(output, targets)
+        loss.backward()
+        shadow_optim.step()
+
+        # Track training statistics
+        _, predicted = output.max(1)
+        train_correct += predicted.eq(targets).sum().item()
+        train_loss += loss.item()
+
+s1=output
+
+
+
+training_data=shadow_train.data  #shadow model's training data
+
+"""
+For the data not present training dataset
+
+"""
+
+new_train = EMNIST("emnist", "digits", download=True, train=True, transform=emnist_transform)
+
+new_hyperparams = hyperparams(
+    batch_size=32,
+    epochs=10,
+    learning_rate=1e-4,
+    n_data=10000,
+)
+
+#idx=set([x for x in range(1000,2000)])
+
+new_train.data = new_train.data[0:1_000]
+new_train.targets = new_train.targets[0:1_000]
+
+
+# new_train.data = torch.utils.data.Subset(new_train.data, idx)
+# new_train.targets = torch.utils.data.Subset(new_train.targets,idx)
+new_train_loader = torch.utils.data.DataLoader(new_train, batch_size=new_hyperparams.batch_size)
+print(type(new_train.data))
+not_training_data=new_train.data   #data out in training data of shadow model
+
+print(len(new_train.data))
+
+
+
+
+#Labels for the datsets
+Y2 = torch.ones([1000,1])
+Y1 = torch.zeros([1000,1])
+print (len(not_training_data))
+#Combining into a single dataset
+
+#X=torch.utils.data.ConcatDataset([training_data,not_training_data])
+X=torch.cat([training_data,not_training_data])
+print(len(X))
+Y = torch.cat([Y1, Y2], dim=0)
+print(Y.size())   
+
+#Converting the ByteTensor into FloatTensor
+
+X=X.type(torch.FloatTensor)
+Y=Y.type(torch.FloatTensor)
+
+
+#Changing the Dimentions for Classification Model
+a = torch.zeros(2000, 784)
+for i in range(2000):
+  a[i]=X[i].reshape(784)
+print((a.size()))
+X=a   #Converting size of input of attack model 
+
+
+
+
+"""
+Defining the attack model
+"""
+class Net(nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(784,25)
+        self.relu1 = nn.ReLU()
+        self.dout = nn.Dropout(0.2)
+        self.fc2 = nn.Linear(25, 50)
+        self.prelu = nn.PReLU(1)
+        self.out = nn.Linear(50,1)
+        self.out_act = nn.Sigmoid()
+        
+    def forward(self, input_):
+        a1 = self.fc1(input_)
+        h1 = self.relu1(a1)
+        dout = self.dout(h1)
+        a2 = self.fc2(dout)
+        h2 = self.prelu(a2)
+        a3 = self.out(h2)
+        y = self.out_act(a3)
+        return y
+    
+net = Net()
+opt = torch.optim.Adam(net.parameters(), lr=0.001, betas=(0.9, 0.999))
+criterion = nn.BCELoss()
+
+"""
+Training the attack model
+"""
+def train_epoch(model, opt, criterion, batch_size=10):
+    model.train()
+    losses = []
+    for beg_i in range(0, X.size(0), batch_size):
+
+        x_batch = X[beg_i:beg_i + batch_size, :]
+        y_batch = Y[beg_i:beg_i + batch_size, :]
+        # x_batch = x_batch
+        # y_batch = y_batch)
+
+        opt.zero_grad()
+        # (1) Forward
+        y_hat = model(x_batch)
+        # (2) Compute diff
+        loss = criterion(y_hat, y_batch)
+        # (3) Compute gradients
+        loss.backward()
+        # (4) update weights
+        opt.step()        
+        losses.append(loss.data.numpy())
+    return losses
+    
+    
+    
+    sample_train = EMNIST("emnist", "digits", download=True, train=True, transform=emnist_transform)
+
+sample_hyperparams = hyperparams(
+    batch_size=16,
+    epochs=10,
+    learning_rate=1e-4,
+    n_data=1,
+)
+
+sample_train.data = sample_train.data[3000:3008]
+sample_train.targets = sample_train.targets[3000:3008]
+
+sample_train_loader = torch.utils.data.DataLoader(sample_train, batch_size=sample_hyperparams.batch_size)
+
+sample_data=sample_train.data
+len(sample_data)
+
+
+
+
+
+a = torch.zeros(len(sample_data), 784)
+print(sample_train.targets)
+for i in range(len(sample_data)):
+  a[i]=sample_data[i].reshape(784)
+
+
+"""
+Chaecking if the data points are present in the training dataset or not
+"""
+a=a.type(torch.FloatTensor)
+
+
+for i in range(len(a)):
+  x_t =a[i]
+  #print((d[i]))
+  net.eval()
+  print(net(x_t))
+
+
+
+
+
